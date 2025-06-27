@@ -20,10 +20,12 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"io"
 
 	"github.com/go-logr/logr"
+
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -74,7 +76,7 @@ func InstallGatewayAPICRDs(ctx context.Context, log logr.Logger, client client.C
 	for {
 		var rawObj map[string]interface{}
 		err := decoder.Decode(&rawObj)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
