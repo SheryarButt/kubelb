@@ -64,6 +64,12 @@ spec:
             {{ if .Values.kubelb.enableSecretSynchronizer -}}
             - --enable-secret-synchronizer=true
             {{ end -}}
+            {{ if .Values.kubelb.autoInstallGatewayAPICRDs -}}
+            - --auto-install-gateway-api-crds=true
+            {{ end -}}
+            {{ if .Values.kubelb.gatewayAPIChannel -}}
+            - --gateway-api-crds-channel={{ .Values.kubelb.gatewayAPIChannel }}
+            {{ end -}}
             - --cluster-name={{ required "A valid .Values.kubelb.tenantName to specify the tenant name is required!" .Values.kubelb.tenantName }}
           env:
           - name: NAMESPACE

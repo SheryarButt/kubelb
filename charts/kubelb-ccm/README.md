@@ -53,6 +53,8 @@ helm install kubelb-ccm kubelb-ccm --namespace kubelb -f values.yaml --create-na
 | kubelb.disableHTTPRouteController | bool | `false` | disableHTTPRouteController specifies whether to disable the HTTPRoute Controller. |
 | kubelb.disableIngressController | bool | `false` | disableIngressController specifies whether to disable the Ingress Controller. |
 | kubelb.enableGatewayAPI | bool | `false` | enableGatewayAPI specifies whether to enable the Gateway API and Gateway Controllers. By default Gateway API is disabled since without Gateway APIs installed the controller cannot start. |
+| kubelb.autoInstallGatewayAPICRDs | bool | `false` | autoInstallGatewayAPICRDs specifies whether to install the Gateway API CRDs. |
+| kubelb.gatewayAPIChannel | string | `"standard"` | The channel to use for Gateway API CRDs. This is only used if `autoInstallGatewayAPICRDs` is set to true. Valid values are `standard` and `experimental`. The default is `standard`. |
 | kubelb.enableLeaderElection | bool | `true` | Enable the leader election. |
 | kubelb.enableSecretSynchronizer | bool | `false` | Enable to automatically convert Secrets labelled with `kubelb.k8c.io/managed-by: kubelb` to Sync Secrets. This is used to sync secrets from tenants to the LB cluster in a controlled and secure way. |
 | kubelb.nodeAddressType | string | `"ExternalIP"` | Address type to use for routing traffic to node ports. Values are ExternalIP, InternalIP. |
