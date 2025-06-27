@@ -268,3 +268,14 @@ gateway-crds-copy:
 	# cat $(LOCALBIN)/gatewayapi-crds.yaml >> charts/kubelb-manager/crds/gatewayapi.yaml
 	# echo '{{- end }}' >> charts/kubelb-manager/crds/gatewayapi.yaml
 	mv $(LOCALBIN)/gatewayapi-crds.yaml charts/kubelb-ccm/crds/gatewayapi.yaml
+
+.PHONY: update-gateway-crds
+update-gateway-crds:
+	@echo "Updating Gateway API CRDs..."
+	./hack/update-gateway-api-crds.sh $(GATEWAY_API_VERSION)
+
+.PHONY: clean-gateway-crds
+clean-gateway-crds:
+	@echo "Cleaning embedded Gateway API CRDs..."
+	rm -f internal/resources/static/gateway-api/manifests/standard/gateway-api-crds.yaml
+	rm -f internal/resources/static/gateway-api/manifests/experimental/gateway-api-crds.yaml
