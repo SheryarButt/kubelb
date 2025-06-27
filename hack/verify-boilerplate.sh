@@ -22,4 +22,5 @@ boilerplate \
   -exclude config \
   -exclude charts \
   -exclude Makefile \
-  -exclude api/ee
+  -exclude api/ee \
+  -exclude internal/resources/static/gateway-api/manifests
