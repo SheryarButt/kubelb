@@ -30,6 +30,7 @@ import (
 
 	kubelbv1alpha1 "k8c.io/kubelb/api/ce/kubelb.k8c.io/v1alpha1"
 	"k8c.io/kubelb/internal/controllers/ccm"
+	gatewayapi "k8c.io/kubelb/internal/resources/static/gateway-api"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -80,6 +81,8 @@ func main() {
 	var disableGRPCRouteController bool
 	var enableSecretSynchronizer bool
 	var enableGatewayAPI bool
+	var autoInstallGatewayAPICRDs bool
+	var gatewayAPIChannel string
 
 	if flag.Lookup("kubeconfig") == nil {
 		flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
@@ -87,8 +90,7 @@ func main() {
 
 	flag.StringVar(&metricsAddr, "metrics-addr", ":0", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "enable-leader-election", true,
-		"Enable leader election for controller ccm. Enabling this will ensure there is only one active controller ccm.")
+	flag.BoolVar(&enableLeaderElection, "enable-leader-election", true, "Enable leader election for controller ccm. Enabling this will ensure there is only one active controller ccm.")
 	flag.StringVar(&leaderElectionNamespace, "leader-election-namespace", "", "Optionally configure leader election namespace.")
 
 	flag.StringVar(&endpointAddressTypeString, "node-address-type", string(corev1.NodeExternalIP), "The default address type used as an endpoint address for the LoadBalancer service. Valid values are ExternalIP or InternalIP, default is ExternalIP.")
@@ -106,6 +108,8 @@ func main() {
 
 	flag.BoolVar(&enableSecretSynchronizer, "enable-secret-synchronizer", false, "Enable to automatically convert Secrets labelled with `kubelb.k8c.io/managed-by: kubelb` to Sync Secrets.  This is used to sync secrets from tenants to the LB cluster in a controlled and secure way.")
 	flag.BoolVar(&enableGatewayAPI, "enable-gateway-api", false, "Enable the Gateway APIs and controllers. By default Gateway API is disabled since without Gateway API CRDs installed the controller cannot start.")
+	flag.BoolVar(&autoInstallGatewayAPICRDs, "auto-install-gateway-api-crds", false, "Install the Gateway API CRDs. By default, this is disabled.")
+	flag.StringVar(&gatewayAPIChannel, "gateway-api-crds-channel", "standard", "The channel to use for Gateway API CRDs. This is only used if --auto-install-gateway-api-crds is set to true. Valid values are 'standard' and 'experimental'. The default is 'standard'.")
 
 	opts := zap.Options{
 		Development: false,
@@ -208,6 +212,18 @@ func main() {
 	if err := mgr.Add(kubeLBMgr); err != nil {
 		setupLog.Error(err, "unable to start kubelb manager")
 		os.Exit(1)
+	}
+
+	// Install Gateway API CRDs if enabled
+	if autoInstallGatewayAPICRDs && enableGatewayAPI {
+		channel := gatewayapi.Channel(gatewayAPIChannel)
+		setupLog.Info("Installing Gateway API CRDs", "channel", channel)
+
+		if err := gatewayapi.InstallGatewayAPICRDs(ctx, setupLog, mgr.GetClient(), channel); err != nil {
+			setupLog.Error(err, "failed to install Gateway API CRDs")
+			os.Exit(1)
+		}
+		setupLog.Info("Successfully installed Gateway API CRDs")
 	}
 
 	if err = (&ccm.KubeLBNodeReconciler{
