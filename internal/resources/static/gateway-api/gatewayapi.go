@@ -128,7 +128,7 @@ func isGatewayAPICRDUpdate(e event.UpdateEvent) bool {
 	}
 
 	// Skip if no actual change
-	if oldCRD.ResourceVersion == newCRD.ResourceVersion {
+	if oldCRD.Generation == newCRD.Generation {
 		return false
 	}
 
