@@ -64,6 +64,9 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+// TODO: @ahmedwaleedmalik this needs to be fixed
+//
+//nolint:gocyclo
 func main() {
 	var metricsAddr string
 	var probeAddr string
