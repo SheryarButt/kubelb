@@ -30,7 +30,6 @@ import (
 
 	kubelbv1alpha1 "k8c.io/kubelb/api/ce/kubelb.k8c.io/v1alpha1"
 	"k8c.io/kubelb/internal/controllers/ccm"
-	gwapicrd "k8c.io/kubelb/internal/resources/static/gateway-api"
 
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -259,12 +258,15 @@ func main() {
 		}
 	}
 
-	if autoInstallGatewayAPICRDs {
-		if err := gwapicrd.Add(mgr, setupLog.WithName("gatewayapi"), gatewayAPIChannel); err != nil {
-			setupLog.Error(err, "failed to install Gateway API CRDs")
+	if autoInstallGatewayAPICRDs && !disableGatewayAPI {
+		if err = (&ccm.GatewayCRDReconciler{
+			Client:  mgr.GetClient(),
+			Log:     ctrl.Log.WithName("controllers").WithName(ccm.GatewayCRDControllerName),
+			Channel: gatewayAPIChannel,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", ccm.GatewayCRDControllerName)
 			os.Exit(1)
 		}
-		setupLog.Info("Successfully installed Gateway API CRDs", "channel", gatewayAPIChannel)
 	}
 
 	if !disableGatewayController && !disableGatewayAPI {
