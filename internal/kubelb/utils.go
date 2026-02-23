@@ -67,6 +67,7 @@ const NameSuffixLength = 4
 const MaxNameLength = 60
 
 const AnnotationRequestWildcardDomain = "kubelb.k8c.io/request-wildcard-domain"
+const AnnotationProxyProtocol = "kubelb.k8c.io/proxy-protocol"
 
 func GenerateName(name, namespace string) string {
 	output := fmt.Sprintf("%s-%s", namespace, name)
