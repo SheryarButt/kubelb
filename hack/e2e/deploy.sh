@@ -36,11 +36,16 @@ GIT_COMMIT="${GIT_COMMIT:-$(git rev-parse --short HEAD)}"
 BUILD_DATE="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 
 # Cluster type detection
-USE_KIND="${USE_KIND:-auto}"                    # auto, true, false
-SKIP_BUILD="${SKIP_BUILD:-false}"               # Skip image building (use pre-built images)
-SKIP_IMAGE_LOAD="${SKIP_IMAGE_LOAD:-false}"     # Skip image loading
-METALLB_IP_RANGE="${METALLB_IP_RANGE:-}"        # Override MetalLB IP range for cloud
-CONVERSION_MODE="${CONVERSION_MODE:-false}"     # Deploy CCM in standalone conversion mode
+USE_KIND="${USE_KIND:-auto}"                # auto, true, false
+SKIP_BUILD="${SKIP_BUILD:-false}"           # Skip image building (use pre-built images)
+SKIP_IMAGE_LOAD="${SKIP_IMAGE_LOAD:-false}" # Skip image loading
+METALLB_IP_RANGE="${METALLB_IP_RANGE:-}"    # Override MetalLB IP range for cloud
+CONVERSION_MODE="${CONVERSION_MODE:-false}" # Deploy CCM in standalone conversion mode
+
+# Secret the manager generates per tenant, holding the scoped ServiceAccount
+# kubeconfig the CCM uses to reach the management cluster.
+TENANT_KUBECONFIG_SECRET="kubelb-ccm-kubeconfig"
+TENANT_KUBECONFIG_TIMEOUT="${TENANT_KUBECONFIG_TIMEOUT:-180}"
 ENABLE_STANDALONE="${ENABLE_STANDALONE:-false}" # Enable standalone cluster for conversion tests
 DEV_MODE="${DEV_MODE:-false}"                   # Minimal local-dev setup: kubelb + tenant1 only
 
@@ -103,6 +108,34 @@ verify_kubeconfigs() {
 }
 
 #######################################
+# Wait on background jobs and fail the deploy if any of them did.
+#
+# A bare `wait` returns 0 no matter how its jobs exited, so readiness checks
+# collected that way were reported as passing even when they timed out, and
+# the deploy went on to announce success over a cluster that had nothing
+# running on it.
+#
+# Arguments:
+#   $1 - message to print when a job failed
+#   $@ - pids to wait on
+#######################################
+wait_all_or_die() {
+  local message="$1"
+  shift
+
+  local any_failed=false
+  local pid
+  for pid in "$@"; do
+    wait "${pid}" || any_failed=true
+  done
+
+  if [[ "${any_failed}" == "true" ]]; then
+    echodate "ERROR: ${message}"
+    exit 1
+  fi
+}
+
+#######################################
 # Build images using centralized make targets
 #######################################
 build_images() {
@@ -140,9 +173,12 @@ build_images() {
     echodate "Pushing images to registry..."
     docker tag kubelb:e2e "${KUBELB_IMAGE}"
     docker tag kubelb-ccm:e2e "${CCM_IMAGE}"
+    local push_pids=()
     docker push "${KUBELB_IMAGE}" &
+    push_pids+=($!)
     docker push "${CCM_IMAGE}" &
-    wait
+    push_pids+=($!)
+    wait_all_or_die "image push to ${IMAGE_REGISTRY} failed" "${push_pids[@]}"
   fi
 
   printElapsed "image_builds" ${build_start}
@@ -169,15 +205,20 @@ load_images() {
   # kubelb cluster: needs kubelb + ccm images
   # tenant clusters: need ccm image (CCM runs there)
   # standalone cluster: needs ccm image (standalone mode)
+  local load_pids=()
   kind load docker-image --name=kubelb "${KUBELB_IMAGE}" "${CCM_IMAGE}" &
+  load_pids+=($!)
   kind load docker-image --name=tenant1 "${CCM_IMAGE}" &
+  load_pids+=($!)
   if [[ "${DEV_MODE}" != "true" ]]; then
     kind load docker-image --name=tenant2 "${CCM_IMAGE}" &
+    load_pids+=($!)
   fi
   if [[ "${ENABLE_STANDALONE}" == "true" ]]; then
     kind load docker-image --name=standalone "${CCM_IMAGE}" &
+    load_pids+=($!)
   fi
-  wait
+  wait_all_or_die "image load into the kind clusters failed" "${load_pids[@]}"
 
   printElapsed "image_loads" ${load_start}
 }
@@ -339,17 +380,102 @@ setup_tenants() {
 }
 
 #######################################
+# Address of the management cluster API server as reachable from inside the
+# Docker network, i.e. from a pod running in one of the tenant kind clusters.
+#######################################
+kind_management_api_server() {
+  local internal_kubeconfig="${KUBECONFIGS_DIR}/kubelb-internal.kubeconfig"
+  local server=""
+
+  if [[ -f "${internal_kubeconfig}" ]]; then
+    server=$(awk '$1 == "server:" { print $2; exit }' "${internal_kubeconfig}")
+  fi
+
+  if [[ -z "${server}" ]]; then
+    local container_ip
+    container_ip=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' kubelb-control-plane 2> /dev/null || echo "")
+    if [[ -n "${container_ip}" ]]; then
+      server="https://${container_ip}:6443"
+    fi
+  fi
+
+  if [[ -z "${server}" ]]; then
+    return 1
+  fi
+  echo "${server}"
+}
+
+#######################################
+# Write the manager-generated tenant kubeconfig for a tenant to a file.
+#
+# Real installs give the CCM the scoped ServiceAccount kubeconfig that the
+# manager writes into the kubelb-ccm-kubeconfig secret of the tenant-<name>
+# namespace, bound to the tenant Role. Handing e2e the cluster-admin
+# kubeconfig instead meant no test could ever fail on a tenant RBAC gap.
+#
+# Arguments:
+#   $1 - tenant name (Tenant CR name, e.g. "primary")
+#   $2 - output file
+#######################################
+fetch_tenant_kubeconfig() {
+  local tenant="$1"
+  local out_file="$2"
+  local namespace="tenant-${tenant}"
+  local manager_kubeconfig="${KUBECONFIGS_DIR}/kubelb.kubeconfig"
+  local deadline=$(($(date +%s) + TENANT_KUBECONFIG_TIMEOUT))
+  local kubeconfig=""
+
+  # The secret appears only after the manager has reconciled the Tenant CR and
+  # the token controller has populated the ServiceAccount token it is built
+  # from, so this races the helm install that just created the Tenant.
+  echodate "Waiting for ${namespace}/${TENANT_KUBECONFIG_SECRET} (scoped CCM kubeconfig)..."
+  while true; do
+    kubeconfig=$(kubectl --kubeconfig "${manager_kubeconfig}" -n "${namespace}" \
+      get secret "${TENANT_KUBECONFIG_SECRET}" \
+      -o go-template='{{ index .data "kubelb" | base64decode }}' 2> /dev/null || true)
+    if [[ -n "${kubeconfig}" ]]; then
+      break
+    fi
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+      echodate "ERROR: secret ${namespace}/${TENANT_KUBECONFIG_SECRET} did not appear within ${TENANT_KUBECONFIG_TIMEOUT}s"
+      echodate "  The kubelb manager creates it while reconciling Tenant/${tenant}."
+      echodate "  Check: kubectl --kubeconfig ${manager_kubeconfig} get tenant ${tenant} -o yaml"
+      echodate "  and the manager logs in the kubelb namespace."
+      return 1
+    fi
+    sleep 2
+  done
+
+  # The manager fills in the API server address it discovers from inside the
+  # management cluster: the cluster-info ConfigMap, falling back to the
+  # kubernetes EndpointSlice. With kind, cluster-info advertises the
+  # control-plane *container hostname* (https://kubelb-control-plane:6443),
+  # which only resolves from a tenant pod as long as Docker's embedded DNS is
+  # reachable through that cluster's CoreDNS. Pin the address to the
+  # control-plane container IP instead - the same address setup-kind.sh bakes
+  # into kubelb-internal.kubeconfig for the admin credential, and the one the
+  # EndpointSlice fallback would produce. Only the endpoint changes: the
+  # tenant ServiceAccount token and CA, the part under test, are kept as the
+  # manager generated them.
+  if is_kind_cluster; then
+    local server
+    if ! server=$(kind_management_api_server); then
+      echodate "ERROR: could not determine the internal API server address of the kubelb cluster"
+      return 1
+    fi
+    kubeconfig=$(echo "${kubeconfig}" | sed -E "s|^([[:space:]]*server:[[:space:]]*).*|\1${server}|")
+  fi
+
+  echo "${kubeconfig}" > "${out_file}"
+  chmod 600 "${out_file}"
+}
+
+#######################################
 # Deploy CCM to tenant clusters
 #######################################
 deploy_ccms() {
   echodate "Deploying CCMs to tenant clusters..."
   local deploy_start=$(nowms)
-
-  # Prepare kubeconfig for CCM to connect to kubelb management cluster
-  local kubelb_kubeconfig="${KUBECONFIGS_DIR}/kubelb.kubeconfig"
-  if is_kind_cluster; then
-    kubelb_kubeconfig="${KUBECONFIGS_DIR}/kubelb-internal.kubeconfig"
-  fi
 
   # Set pull policy based on cluster type
   local pull_policy="IfNotPresent"
@@ -368,11 +494,16 @@ deploy_ccms() {
       # Create kubelb namespace in tenant cluster
       kubectl create ns kubelb 2> /dev/null || true
 
-      # Skip kubelb-cluster secret in standalone conversion mode
+      # Skip kubelb-cluster secret in standalone conversion mode: that CCM
+      # never talks to a management cluster.
       if [[ "${CONVERSION_MODE}" != "true" ]]; then
-        # Create secret with kubeconfig to kubelb management cluster
+        # Create secret with the scoped tenant kubeconfig to the kubelb
+        # management cluster, mirroring a real tenant-cluster install.
+        local tenant_kubeconfig="${KUBECONFIGS_DIR}/tenant-${tenant}-ccm.kubeconfig"
+        fetch_tenant_kubeconfig "${tenant}" "${tenant_kubeconfig}" || exit 1
+
         kubectl -n kubelb create secret generic kubelb-cluster \
-          --from-file=kubelb="${kubelb_kubeconfig}" \
+          --from-file=kubelb="${tenant_kubeconfig}" \
           --dry-run=client -o yaml | kubectl apply -f -
       fi
 
@@ -664,19 +795,22 @@ configure_standalone_metallb_pool() {
 deploy_test_apps() {
   echodate "Deploying shared test apps to all clusters..."
 
+  local apply_pids=()
   for tenant in "${!TENANT_MAP[@]}"; do
     local cluster="${TENANT_MAP[$tenant]}"
     KUBECONFIG="${KUBECONFIGS_DIR}/${cluster}.kubeconfig" \
       kubectl apply -f "${E2E_MANIFESTS_DIR}/test-apps/echo-server.yaml" &
+    apply_pids+=($!)
   done
 
   # Also deploy to standalone cluster if enabled
   if [[ "${ENABLE_STANDALONE}" == "true" ]]; then
     KUBECONFIG="${KUBECONFIGS_DIR}/standalone.kubeconfig" \
       kubectl apply -f "${E2E_MANIFESTS_DIR}/test-apps/echo-server.yaml" &
+    apply_pids+=($!)
   fi
 
-  wait
+  wait_all_or_die "Shared test apps could not be applied" "${apply_pids[@]}"
   echodate "Test apps deployed (pods starting in background)"
 }
 
@@ -754,24 +888,30 @@ if [[ "${ENABLE_STANDALONE}" == "true" ]]; then
 fi
 
 # Wait for all clusters to be ready in parallel
+cluster_ready_pids=()
 wait_for_ready &
+cluster_ready_pids+=($!)
 if [[ "${ENABLE_STANDALONE}" == "true" ]]; then
   wait_for_standalone_ready &
+  cluster_ready_pids+=($!)
 fi
-wait
+wait_all_or_die "cluster readiness checks failed" "${cluster_ready_pids[@]}"
 
 deploy_test_apps
 
 # Wait for KubeLB tenant envoy proxy deployments to be ready
 # These are created dynamically after CCM creates LoadBalancer CRDs, so poll for existence first
 echodate "Waiting for tenant envoy proxies..."
+envoy_pids=()
 KUBECONFIG="${KUBECONFIGS_DIR}/kubelb.kubeconfig" \
   wait_for_deployment_exist_and_ready tenant-primary envoy-tenant-primary 300 &
+envoy_pids+=($!)
 if [[ "${DEV_MODE}" != "true" ]]; then
   KUBECONFIG="${KUBECONFIGS_DIR}/kubelb.kubeconfig" \
     wait_for_deployment_exist_and_ready tenant-secondary envoy-tenant-secondary 300 &
+  envoy_pids+=($!)
 fi
-wait
+wait_all_or_die "tenant envoy proxies never became ready, the CCM is not propagating LoadBalancers" "${envoy_pids[@]}"
 echodate "Tenant envoy proxies ready"
 
 echodate ""
