@@ -7,8 +7,8 @@ maintainers:
   - name: Kubermatic
     email: support@kubermatic.com
     url: https://kubermatic.com
-version: v0.4.0
-appVersion: v0.4.0
+version: v0.5.0
+appVersion: v0.5.0
 dependencies:
   - name: ingress-nginx
     repository: https://kubernetes.github.io/ingress-nginx
@@ -34,8 +34,8 @@ dependencies:
   - name: agentgateway-crds
     repository: oci://cr.agentgateway.dev/charts
     condition: agentgateway-crds.enabled
-    version: 1.4.0
+    version: 1.4.1
   - name: agentgateway
     repository: oci://cr.agentgateway.dev/charts
     condition: agentgateway.enabled
-    version: 1.4.0
+    version: 1.4.1

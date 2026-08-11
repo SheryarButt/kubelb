@@ -2,12 +2,12 @@
 
 Helm chart for deploying optional addons to enhance KubeLB functionality.
 
-![Version: v0.4.0](https://img.shields.io/badge/Version-v0.4.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v0.4.0](https://img.shields.io/badge/AppVersion-v0.4.0-informational?style=flat-square)
+![Version: v0.5.0](https://img.shields.io/badge/Version-v0.5.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v0.5.0](https://img.shields.io/badge/AppVersion-v0.5.0-informational?style=flat-square)
 
 ## Installing the chart
 
 ```sh
-helm pull oci://quay.io/kubermatic/helm-charts/kubelb-addons --version=v0.4.0 --untardir "." --untar
+helm pull oci://quay.io/kubermatic/helm-charts/kubelb-addons --version=v0.5.0 --untardir "." --untar
 ## Create and update values.yaml with the required values.
 helm install kubelb-addons kubelb-addons --namespace kubelb -f values.yaml --create-namespace
 ```
@@ -21,7 +21,7 @@ All Helm charts are cryptographically signed using [Sigstore Cosign](https://git
 ### Verify Chart Signature
 
 ```bash
-cosign verify quay.io/kubermatic/helm-charts/kubelb-addons:v0.4.0 \
+cosign verify quay.io/kubermatic/helm-charts/kubelb-addons:v0.5.0 \
   --certificate-identity-regexp="^https://github.com/kubermatic/kubelb/.github/workflows/release.yml@refs/tags/addons-v.*" \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
@@ -89,8 +89,8 @@ These are the default values to use when Gateway API is disabled for KubeLB in f
 |------------|------|---------|
 | https://kubernetes-sigs.github.io/external-dns | external-dns | 1.21.1 |
 | https://kubernetes.github.io/ingress-nginx | ingress-nginx | 4.15.1 |
-| oci://cr.agentgateway.dev/charts | agentgateway | 1.4.0 |
-| oci://cr.agentgateway.dev/charts | agentgateway-crds | 1.4.0 |
+| oci://cr.agentgateway.dev/charts | agentgateway | 1.4.1 |
+| oci://cr.agentgateway.dev/charts | agentgateway-crds | 1.4.1 |
 | oci://docker.io/envoyproxy | envoy-gateway(gateway-helm) | 1.8.3 |
 | oci://quay.io/jetstack/charts | cert-manager | 1.21.1 |
 | oci://quay.io/metallb/chart | metallb | 0.16.1 |
