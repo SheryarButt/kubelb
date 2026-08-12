@@ -60,6 +60,27 @@ const (
 	envoyProxyManagedByVal = "kubelb"
 )
 
+// defaultEnvoyProxyResources keeps the managed Envoy out of the BestEffort
+// QoS class. It carries all tenant data-plane traffic, so without a request
+// it is the first thing evicted or OOM-killed on a node it shares with other
+// proxies. Sized off measured load: ~12k QPS sat at roughly 45% of one CPU
+// and 18% of 512Mi, with bursts to ~1.1 CPU on a busy shared node.
+//
+// Overridden by Config.spec.envoyProxy.resources, or per tenant by
+// Tenant.spec.envoyProxy.resources.
+func defaultEnvoyProxyResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("200m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("2"),
+			corev1.ResourceMemory: resource.MustParse("1Gi"),
+		},
+	}
+}
+
 type EnvoyCPReconciler struct {
 	ctrlruntimeclient.Client
 	EnvoyCache        envoycachev3.SnapshotCache
@@ -513,10 +534,13 @@ func (r *EnvoyCPReconciler) getEnvoyProxyPodSpec(config *kubelbv1alpha1.Config, 
 		},
 	}
 
-	if tenant.Spec.EnvoyProxy != nil && tenant.Spec.EnvoyProxy.Resources != nil {
+	switch {
+	case tenant.Spec.EnvoyProxy != nil && tenant.Spec.EnvoyProxy.Resources != nil:
 		template.Spec.Containers[0].Resources = *tenant.Spec.EnvoyProxy.Resources
-	} else if envoyProxy.Resources != nil {
+	case envoyProxy.Resources != nil:
 		template.Spec.Containers[0].Resources = *envoyProxy.Resources
+	default:
+		template.Spec.Containers[0].Resources = defaultEnvoyProxyResources()
 	}
 
 	if envoyProxy.Affinity != nil {
@@ -547,14 +571,16 @@ func (r *EnvoyCPReconciler) getEnvoyProxyPodSpec(config *kubelbv1alpha1.Config, 
 }
 
 func (r *EnvoyCPReconciler) envoyProxyAnnotations(config *kubelbv1alpha1.Config) map[string]string {
+	annotations := map[string]string{
+		kubelb.AnnotationResourceNamingVersion: kubelb.ResourceNamingVersion,
+	}
 	if config.Spec.EnvoyProxy.PodMonitor != nil && config.Spec.EnvoyProxy.PodMonitor.Enabled {
-		return nil
+		return annotations
 	}
-	return map[string]string{
-		"prometheus.io/scrape": "true",
-		"prometheus.io/port":   fmt.Sprintf("%d", envoycp.EnvoyStatsPort),
-		"prometheus.io/path":   "/stats/prometheus",
-	}
+	annotations["prometheus.io/scrape"] = "true"
+	annotations["prometheus.io/port"] = fmt.Sprintf("%d", envoycp.EnvoyStatsPort)
+	annotations["prometheus.io/path"] = "/stats/prometheus"
+	return annotations
 }
 
 // podTemplateSpecNeedsUpdate compares the relevant fields of two PodTemplateSpecs
